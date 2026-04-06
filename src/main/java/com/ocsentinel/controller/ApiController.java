@@ -3,7 +3,7 @@ package com.ocsentinel.controller;
 import com.ocsentinel.model.OCUpdate;
 import com.ocsentinel.model.StatusMessage;
 import com.ocsentinel.service.AngelOneService;
-import com.ocsentinel.service.AngelOneWebSocketV2;
+import com.ocsentinel.service.RestPollingService;
 import com.ocsentinel.service.BroadcastService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -16,7 +16,7 @@ import java.util.*;
 public class ApiController {
 
     @Autowired private AngelOneService     angelService;
-    @Autowired private AngelOneWebSocketV2 wsV2;
+    @Autowired private RestPollingService  restPollingService;
     @Autowired private BroadcastService    broadcaster;
     @Autowired private com.ocsentinel.service.AiService aiService;
 
@@ -25,8 +25,8 @@ public class ApiController {
     public ResponseEntity<Map<String, Object>> health() {
         return ResponseEntity.ok(Map.of(
             "status",    "UP",
-            "service",   "OC Sentinel — WebSocket V2 Edition",
-            "version",   "2.0.0",
+            "service",   "OC Sentinel — REST Polling Edition",
+            "version",   "2.1.0",
             "timestamp", System.currentTimeMillis()
         ));
     }
@@ -55,7 +55,7 @@ public class ApiController {
     // ── LOGOUT ────────────────────────────────────────────────────────────────
     @PostMapping("/logout")
     public ResponseEntity<Map<String, Object>> logout() {
-        wsV2.stop();
+        restPollingService.stop();
         angelService.clearSession();
         return ResponseEntity.ok(Map.of("success", true));
     }
@@ -71,7 +71,7 @@ public class ApiController {
         return ResponseEntity.ok(Map.of("success", true, "expiries", exps));
     }
 
-    // ── START WEBSOCKET V2 FEED ───────────────────────────────────────────────
+    // ── START REST POLLING FEED ─────────────────────────────────────────────────
     // POST /api/start-feed
     // { "instrument":"NIFTY", "expiry":"27Mar2025", "apiKey":"xxx" }
     @PostMapping("/start-feed")
@@ -88,17 +88,17 @@ public class ApiController {
         String apiKey     = body.getOrDefault("apiKey",     "");
 
         // Stop any existing feed
-        wsV2.stop();
+        restPollingService.stop();
 
-        // Start fresh with WebSocket V2
-        wsV2.start(instrument, expiry, apiKey);
+        // Start fresh with REST polling
+        restPollingService.start(instrument, expiry, apiKey);
 
         broadcaster.status(new StatusMessage("STARTING",
-            "Starting WebSocket V2 feed for " + instrument + " " + expiry));
+            "Starting REST polling feed for " + instrument + " " + expiry));
 
         return ResponseEntity.ok(Map.of(
             "success", true,
-            "message", "WebSocket V2 feed started: " + instrument + " " + expiry
+            "message", "REST polling feed started: " + instrument + " " + expiry
         ));
     }
 
@@ -107,20 +107,22 @@ public class ApiController {
     public ResponseEntity<Map<String, Object>> session() {
         var s = angelService.getSession();
         return ResponseEntity.ok(Map.of(
-            "loggedIn",  s.isLoggedIn(),
-            "name",      s.getName() != null ? s.getName() : "",
-            "wsRunning", wsV2.isRunning()
+            "loggedIn",       s.isLoggedIn(),
+            "name",           s.getName() != null ? s.getName() : "",
+            "pollingRunning", restPollingService.isRunning(),
+            "instrument",     restPollingService.getCurrentInstrument(),
+            "expiry",         restPollingService.getCurrentExpiry()
         ));
     }
 
     // ── AI ANALYSIS ───────────────────────────────────────────────────────────
     @PostMapping("/analyze")
     public ResponseEntity<com.ocsentinel.model.AnalysisResult> analyze() {
-        OCUpdate oc = wsV2.getLatestOC();
+        OCUpdate oc = restPollingService.getLatestOC();
         if (oc == null) {
             com.ocsentinel.model.AnalysisResult err = new com.ocsentinel.model.AnalysisResult();
             err.setVerdict("WAITING");
-            err.setReasoning("Waiting for live data feed...");
+            err.setReasoning("Waiting for REST polling data feed...");
             return ResponseEntity.ok(err);
         }
         return ResponseEntity.ok(aiService.analyze(oc));
