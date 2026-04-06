@@ -94,8 +94,9 @@ public class RestPollingService {
                 // Broadcast to frontend
                 broadcaster.ocUpdate(oc);
                 
+                List<OCUpdate.StrikeRow> strikes = oc.getStrikes();
                 log.debug("Polled data: {} strikes, spot={}", 
-                    oc.getStrikes() != null ? oc.getStrikes().size() : 0, oc.getSpot());
+                    strikes != null ? strikes.size() : 0, oc.getSpot());
             }
             
         } catch (Exception e) {
@@ -113,7 +114,9 @@ public class RestPollingService {
                 latestOC = oc;
                 oc.setDataSource("REST_INITIAL");
                 broadcaster.ocUpdate(oc);
-                log.info("Initial data loaded: {} strikes", oc.getStrikes().size());
+                
+                List<OCUpdate.StrikeRow> strikes = oc.getStrikes();
+                log.info("Initial data loaded: {} strikes", strikes != null ? strikes.size() : 0);
             }
         } catch (Exception e) {
             log.error("Initial data load failed: {}", e.getMessage());

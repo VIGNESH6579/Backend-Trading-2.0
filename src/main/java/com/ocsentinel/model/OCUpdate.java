@@ -1,9 +1,13 @@
 package com.ocsentinel.model;
 
 import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 import java.util.List;
 
 @Data
+@Getter
+@Setter
 public class OCUpdate {
     private String instrument;
     private String expiry;
@@ -22,6 +26,8 @@ public class OCUpdate {
     private String trendReasoning;
 
     @Data
+    @Getter
+    @Setter
     public static class StrikeRow {
         private double strike;
         private OIData ce = new OIData();
@@ -29,6 +35,8 @@ public class OCUpdate {
     }
 
     @Data
+    @Getter
+    @Setter
     public static class OIData {
         private String token;      // Angel One symbol token
         private long   oi;
