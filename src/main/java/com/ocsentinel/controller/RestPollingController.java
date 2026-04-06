@@ -18,7 +18,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/rest")
 @CrossOrigin(origins = "*")
-public class RestController {
+public class RestPollingController {
 
     @Autowired
     private RestPollingService restPollingService;
