@@ -1,8 +1,12 @@
 package com.ocsentinel.model;
 
 import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 
 @Data
+@Getter
+@Setter
 public class AnalysisResult {
     private String verdict;      // BUY CE, BUY PE, or NO TRADE
     private double entry;
