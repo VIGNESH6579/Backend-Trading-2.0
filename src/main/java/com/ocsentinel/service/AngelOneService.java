@@ -64,7 +64,11 @@ public class AngelOneService {
 
     // ── FETCH EXPIRIES ────────────────────────────────────────────────────────
     public List<String> fetchExpiries(String instrument, String apiKey) {
-        if (!session.isLoggedIn()) return genExpiries();
+        log.info("Fetching expiries for {} - Session logged in: {}", instrument, session.isLoggedIn());
+        if (!session.isLoggedIn()) {
+            log.warn("Session not logged in - using generated expiries");
+            return genExpiries();
+        }
         try {
             String body = mapper.writeValueAsString(Map.of(
                 "name", instrument, "expirydate", "", "strikePrice", "", "optionType", "CE"
@@ -90,7 +94,11 @@ public class AngelOneService {
     // ── FETCH FULL OPTION CHAIN (REST snapshot) ───────────────────────────────
     // Used as initial load and fallback when WebSocket V2 data is incomplete
     public OCUpdate fetchOptionChain(String instrument, String expiry, String apiKey) {
-        if (!session.isLoggedIn()) return null;
+        log.info("Fetching OC for {} {} - Session logged in: {}", instrument, expiry, session.isLoggedIn());
+        if (!session.isLoggedIn()) {
+            log.warn("Session not logged in - returning null");
+            return null;
+        }
         try {
             String body = mapper.writeValueAsString(Map.of(
                 "name", instrument, "expirydate", expiry, "strikePrice", "", "optionType", ""

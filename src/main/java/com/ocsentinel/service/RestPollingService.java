@@ -96,8 +96,12 @@ public class RestPollingService {
                 broadcaster.ocUpdate(oc);
                 
                 List<OCUpdate.StrikeRow> strikes = oc.getStrikes();
-                log.debug("Polled data: {} strikes, spot={}", 
+                log.info("Polled data: {} strikes, spot={}", 
                     strikes != null ? strikes.size() : 0, oc.getSpot());
+            } else {
+                log.warn("No data returned from Angel One API - session may be expired");
+                broadcaster.status(new StatusMessage("NO_DATA", 
+                    "No live data - session may be expired"));
             }
             
         } catch (Exception e) {
