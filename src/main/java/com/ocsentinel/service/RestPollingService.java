@@ -38,8 +38,8 @@ public class RestPollingService {
     @Autowired private AngelOneService angelService;
     @Autowired private BroadcastService broadcaster;
 
-    // Polling configuration - REDUCED to avoid blocking
-    private static final int POLL_INTERVAL_SECONDS = 5; // Poll every 5 seconds (was 2)
+    // Polling configuration - AGGRESSIVE throttling to avoid blocking
+    private static final int POLL_INTERVAL_SECONDS = 10; // Poll every 10 seconds (was 5, was 2)
     
     // Current subscription state
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -50,6 +50,7 @@ public class RestPollingService {
     // Error tracking for throttling
     private int consecutiveErrors = 0;
     private long lastSuccessfulRequest = 0;
+    private long backoffUntil = 0; // For exponential backoff
 
     // Latest data cache
     private volatile OCUpdate latestOC = null;
@@ -80,17 +81,14 @@ public class RestPollingService {
     }
 
     // ── SCHEDULED POLLING ─────────────────────────────────────────────────────
-    @Scheduled(fixedRate = 5000) // Poll every 5 seconds (reduced from 2 to avoid blocking)
+    @Scheduled(fixedRate = 10000) // Poll every 10 seconds (aggressive throttling to avoid blocking)
     public void pollMarketData() {
         if (!running.get()) return;
         
-        // Throttling: Skip requests if too many errors
-        if (consecutiveErrors >= 5) {
-            long waitTime = 60000 - (System.currentTimeMillis() - lastSuccessfulRequest);
-            if (waitTime > 0) {
-                log.warn("Throttling requests - waiting {}ms due to {} consecutive errors", waitTime, consecutiveErrors);
-                return;
-            }
+        // Exponential backoff: Skip if in backoff period
+        if (System.currentTimeMillis() < backoffUntil) {
+            log.warn("Exponential backoff active - waiting {}ms", backoffUntil - System.currentTimeMillis());
+            return;
         }
         
         try {
@@ -101,6 +99,7 @@ public class RestPollingService {
                 // Reset error tracking on success
                 consecutiveErrors = 0;
                 lastSuccessfulRequest = System.currentTimeMillis();
+                backoffUntil = 0; // Clear backoff
                 
                 // Update cache and broadcast
                 latestOC = oc;
@@ -118,6 +117,14 @@ public class RestPollingService {
             } else {
                 consecutiveErrors++;
                 log.warn("No data returned from Angel One API - consecutive errors: {}", consecutiveErrors);
+                
+                // Exponential backoff: 10s, 20s, 40s, 80s, 160s max
+                if (consecutiveErrors >= 3) {
+                    long backoffMs = Math.min(10000 * (1L << (consecutiveErrors - 3)), 160000);
+                    backoffUntil = System.currentTimeMillis() + backoffMs;
+                    log.warn("Starting exponential backoff for {}ms", backoffMs);
+                }
+                
                 broadcaster.status(new StatusMessage("NO_DATA", 
                     "No live data - API may be blocking (errors: " + consecutiveErrors + ")"));
             }
@@ -125,6 +132,14 @@ public class RestPollingService {
         } catch (Exception e) {
             consecutiveErrors++;
             log.error("REST polling error: {} - consecutive errors: {}", e.getMessage(), consecutiveErrors);
+            
+            // Exponential backoff on exceptions too
+            if (consecutiveErrors >= 3) {
+                long backoffMs = Math.min(10000 * (1L << (consecutiveErrors - 3)), 160000);
+                backoffUntil = System.currentTimeMillis() + backoffMs;
+                log.warn("Starting exponential backoff for {}ms due to exception", backoffMs);
+            }
+            
             broadcaster.status(new StatusMessage("POLLING_ERROR", 
                 "Polling error: " + e.getMessage() + " (errors: " + consecutiveErrors + ")"));
         }

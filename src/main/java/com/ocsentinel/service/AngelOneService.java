@@ -249,12 +249,15 @@ public class AngelOneService {
         Request.Builder b = new Request.Builder().url(url)
             .addHeader("Content-Type",       "application/json")
             .addHeader("Accept",             "application/json")
+            .addHeader("User-Agent",         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
             .addHeader("X-PrivateKey",       apiKey)
             .addHeader("X-UserType",         "USER")
             .addHeader("X-SourceID",         "WEB")
             .addHeader("X-ClientLocalIP",    "127.0.0.1")
             .addHeader("X-ClientPublicIP",   "127.0.0.1")
-            .addHeader("X-MACAddress",       "00:00:00:00:00:00");
+            .addHeader("X-MACAddress",       "00:00:00:00:00:00")
+            .addHeader("Cache-Control",      "no-cache")
+            .addHeader("Pragma",             "no-cache");
         if (jwt != null) b.addHeader("Authorization", "Bearer " + jwt);
         if (body != null) b.post(RequestBody.create(body, JSON));
         else b.get();
@@ -266,17 +269,43 @@ public class AngelOneService {
         String[] mo = {"Jan","Feb","Mar","Apr","May","Jun",
                         "Jul","Aug","Sep","Oct","Nov","Dec"};
         Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"));
+        
+        // Generate realistic expiry dates based on current market practice
+        // NIFTY: Weekly (every Thursday) + Monthly (last Thursday)
+        // BANKNIFTY: Weekly (every Wednesday, Thursday, Friday) + Monthly (last Thursday)
+        
         for (int i = 0; i < 6; i++) {
             Calendar t = (Calendar) cal.clone();
-            t.add(Calendar.DAY_OF_YEAR, i * 7);
-            int diff = (Calendar.THURSDAY - t.get(Calendar.DAY_OF_WEEK) + 7) % 7;
+            t.add(Calendar.DAY_OF_YEAR, i * 7); // Weekly intervals
+            
+            // Find nearest expiry day (Thu for NIFTY, Wed/Thu/Fri for BANKNIFTY)
+            int[] expiryDays = {Calendar.THURSDAY, Calendar.WEDNESDAY, Calendar.FRIDAY};
+            int closestDay = Calendar.THURSDAY; // Default to Thursday
+            
+            for (int day : expiryDays) {
+                int diff = (day - t.get(Calendar.DAY_OF_WEEK) + 7) % 7;
+                if (diff <= 3) { // Within 3 days
+                    closestDay = day;
+                    break;
+                }
+            }
+            
+            int diff = (closestDay - t.get(Calendar.DAY_OF_WEEK) + 7) % 7;
             t.add(Calendar.DAY_OF_YEAR, diff);
+            
+            // Skip if date is in the past
+            if (t.before(cal)) {
+                t.add(Calendar.DAY_OF_YEAR, 7);
+            }
+            
             out.add(String.format("%02d%s%d",
                 t.get(Calendar.DAY_OF_MONTH),
                 mo[t.get(Calendar.MONTH)],
                 t.get(Calendar.YEAR)));
         }
-        return out;
+        
+        // Sort and remove duplicates
+        return out.stream().distinct().sorted().limit(6).collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
     }
 
     public SessionInfo getSession() { return session; }
