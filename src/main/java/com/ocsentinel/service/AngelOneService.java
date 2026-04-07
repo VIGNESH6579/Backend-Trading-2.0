@@ -107,10 +107,20 @@ public class AngelOneService {
                 BASE + "/rest/secure/angelbroking/marketData/v1/optionChain",
                 apiKey, session.getJwtToken(), body);
             try (Response res = http.newCall(req).execute()) {
-                JsonNode j = mapper.readTree(res.body().string());
+                String responseBody = res.body().string();
+                
+                // Check if response is HTML (blocking/error response)
+                if (responseBody.trim().startsWith("<html>")) {
+                    log.error("Angel One API blocking detected - Response: {}", responseBody.substring(0, Math.min(200, responseBody.length())));
+                    return null;
+                }
+                
+                JsonNode j = mapper.readTree(responseBody);
                 if (j.path("status").asBoolean() && j.has("data")) {
                     log.info("REST OC fetch OK: {} rows", j.path("data").size());
                     return parseOC(j.path("data"), instrument, expiry, "REST");
+                } else {
+                    log.warn("Angel One API returned status=false: {}", j.toString());
                 }
             }
         } catch (Exception e) { log.error("OC fetch error: {}", e.getMessage()); }

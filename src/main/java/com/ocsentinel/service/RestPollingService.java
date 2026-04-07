@@ -38,14 +38,18 @@ public class RestPollingService {
     @Autowired private AngelOneService angelService;
     @Autowired private BroadcastService broadcaster;
 
-    // Polling configuration
-    private static final int POLL_INTERVAL_SECONDS = 2; // Poll every 2 seconds
+    // Polling configuration - REDUCED to avoid blocking
+    private static final int POLL_INTERVAL_SECONDS = 5; // Poll every 5 seconds (was 2)
     
     // Current subscription state
     private final AtomicBoolean running = new AtomicBoolean(false);
     private String currentInstrument;
     private String currentExpiry;
     private String currentApiKey;
+    
+    // Error tracking for throttling
+    private int consecutiveErrors = 0;
+    private long lastSuccessfulRequest = 0;
 
     // Latest data cache
     private volatile OCUpdate latestOC = null;
@@ -76,15 +80,28 @@ public class RestPollingService {
     }
 
     // ── SCHEDULED POLLING ─────────────────────────────────────────────────────
-    @Scheduled(fixedRate = 2000) // Poll every 2 seconds
+    @Scheduled(fixedRate = 5000) // Poll every 5 seconds (reduced from 2 to avoid blocking)
     public void pollMarketData() {
         if (!running.get()) return;
+        
+        // Throttling: Skip requests if too many errors
+        if (consecutiveErrors >= 5) {
+            long waitTime = 60000 - (System.currentTimeMillis() - lastSuccessfulRequest);
+            if (waitTime > 0) {
+                log.warn("Throttling requests - waiting {}ms due to {} consecutive errors", waitTime, consecutiveErrors);
+                return;
+            }
+        }
         
         try {
             // Fetch latest option chain data
             OCUpdate oc = angelService.fetchOptionChain(currentInstrument, currentExpiry, currentApiKey);
             
             if (oc != null) {
+                // Reset error tracking on success
+                consecutiveErrors = 0;
+                lastSuccessfulRequest = System.currentTimeMillis();
+                
                 // Update cache and broadcast
                 latestOC = oc;
                 
@@ -99,15 +116,17 @@ public class RestPollingService {
                 log.info("Polled data: {} strikes, spot={}", 
                     strikes != null ? strikes.size() : 0, oc.getSpot());
             } else {
-                log.warn("No data returned from Angel One API - session may be expired");
+                consecutiveErrors++;
+                log.warn("No data returned from Angel One API - consecutive errors: {}", consecutiveErrors);
                 broadcaster.status(new StatusMessage("NO_DATA", 
-                    "No live data - session may be expired"));
+                    "No live data - API may be blocking (errors: " + consecutiveErrors + ")"));
             }
             
         } catch (Exception e) {
-            log.error("REST polling error: {}", e.getMessage());
+            consecutiveErrors++;
+            log.error("REST polling error: {} - consecutive errors: {}", e.getMessage(), consecutiveErrors);
             broadcaster.status(new StatusMessage("POLLING_ERROR", 
-                "Polling error: " + e.getMessage()));
+                "Polling error: " + e.getMessage() + " (errors: " + consecutiveErrors + ")"));
         }
     }
 
