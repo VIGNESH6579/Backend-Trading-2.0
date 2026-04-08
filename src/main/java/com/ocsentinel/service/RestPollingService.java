@@ -39,7 +39,11 @@ public class RestPollingService {
     @Autowired private BroadcastService broadcaster;
 
     // Polling configuration - AGGRESSIVE throttling to avoid blocking
-    private static final int POLL_INTERVAL_SECONDS = 10; // Poll every 10 seconds (was 5, was 2)
+    private static final int POLL_INTERVAL_SECONDS = 15; // Poll every 15 seconds (was 10, was 5, was 2)
+    
+    // Fallback strategy configuration
+    private static final int MAX_CONSECUTIVE_ERRORS = 3;
+    private static final long[] BACKOFF_INTERVALS = {15000, 30000, 60000, 120000, 300000}; // 15s, 30s, 1m, 2m, 5m
     
     // Current subscription state
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -81,13 +85,13 @@ public class RestPollingService {
     }
 
     // ── SCHEDULED POLLING ─────────────────────────────────────────────────────
-    @Scheduled(fixedRate = 10000) // Poll every 10 seconds (aggressive throttling to avoid blocking)
+    @Scheduled(fixedRate = 15000) // Poll every 15 seconds (very aggressive throttling to avoid blocking)
     public void pollMarketData() {
         if (!running.get()) return;
         
-        // Exponential backoff: Skip if in backoff period
+        // Adaptive backoff: Skip if in backoff period
         if (System.currentTimeMillis() < backoffUntil) {
-            log.warn("Exponential backoff active - waiting {}ms", backoffUntil - System.currentTimeMillis());
+            log.warn("Adaptive backoff active - waiting {}ms", backoffUntil - System.currentTimeMillis());
             return;
         }
         
@@ -118,11 +122,20 @@ public class RestPollingService {
                 consecutiveErrors++;
                 log.warn("No data returned from Angel One API - consecutive errors: {}", consecutiveErrors);
                 
-                // Exponential backoff: 10s, 20s, 40s, 80s, 160s max
-                if (consecutiveErrors >= 3) {
-                    long backoffMs = Math.min(10000 * (1L << (consecutiveErrors - 3)), 160000);
+                // Adaptive backoff with progressive intervals
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    int backoffIndex = Math.min(consecutiveErrors - MAX_CONSECUTIVE_ERRORS, BACKOFF_INTERVALS.length - 1);
+                    long backoffMs = BACKOFF_INTERVALS[backoffIndex];
                     backoffUntil = System.currentTimeMillis() + backoffMs;
-                    log.warn("Starting exponential backoff for {}ms", backoffMs);
+                    log.warn("Starting adaptive backoff for {}ms (level {})", backoffMs, backoffIndex + 1);
+                    
+                    // Send cached data if available
+                    if (latestOC != null) {
+                        log.info("Broadcasting cached data during backoff");
+                        latestOC.setDataSource("CACHED_DATA");
+                        latestOC.setTimestamp(System.currentTimeMillis());
+                        broadcaster.ocUpdate(latestOC);
+                    }
                 }
                 
                 broadcaster.status(new StatusMessage("NO_DATA", 
@@ -133,11 +146,12 @@ public class RestPollingService {
             consecutiveErrors++;
             log.error("REST polling error: {} - consecutive errors: {}", e.getMessage(), consecutiveErrors);
             
-            // Exponential backoff on exceptions too
-            if (consecutiveErrors >= 3) {
-                long backoffMs = Math.min(10000 * (1L << (consecutiveErrors - 3)), 160000);
+            // Adaptive backoff on exceptions too
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                int backoffIndex = Math.min(consecutiveErrors - MAX_CONSECUTIVE_ERRORS, BACKOFF_INTERVALS.length - 1);
+                long backoffMs = BACKOFF_INTERVALS[backoffIndex];
                 backoffUntil = System.currentTimeMillis() + backoffMs;
-                log.warn("Starting exponential backoff for {}ms due to exception", backoffMs);
+                log.warn("Starting adaptive backoff for {}ms due to exception (level {})", backoffMs, backoffIndex + 1);
             }
             
             broadcaster.status(new StatusMessage("POLLING_ERROR", 

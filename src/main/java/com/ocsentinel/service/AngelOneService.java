@@ -15,12 +15,17 @@ import java.util.*;
 public class AngelOneService {
 
     private static final Logger log = LoggerFactory.getLogger(AngelOneService.class);
-    private static final String BASE   = "https://apiconnect.angelbroking.com";
+    private static final String[] BASE_URLS = {
+        "https://apiconnect.angelbroking.com",
+        "https://angelbroking.com",
+        "https://smartapi.angelbroking.com"
+    };
     private static final MediaType JSON = MediaType.get("application/json");
-
+    
     private final OkHttpClient http   = new OkHttpClient();
     private final ObjectMapper mapper = new ObjectMapper();
     private SessionInfo session       = new SessionInfo();
+    private int currentBaseIndex = 0; // For URL rotation
 
     // ── LOGIN ─────────────────────────────────────────────────────────────────
     public Map<String, Object> login(String clientCode, String mpin,
@@ -33,26 +38,38 @@ public class AngelOneService {
                 "totp",       totp
             ));
 
-            Request req = buildRequest(BASE + "/rest/auth/angelbroking/user/v1/loginByPassword",
-                    apiKey, null, body);
-
-            try (Response res = http.newCall(req).execute()) {
-                JsonNode j = mapper.readTree(res.body().string());
-                if (j.path("status").asBoolean()) {
-                    JsonNode data = j.path("data");
-                    session = new SessionInfo();
-                    session.setJwtToken(data.path("jwtToken").asText());
-                    session.setFeedToken(data.path("feedToken").asText());
-                    session.setClientCode(clientCode);
-                    session.setName(data.path("name").asText(clientCode));
-                    session.setLoggedIn(true);
-                    result.put("success",   true);
-                    result.put("name",      session.getName());
-                    result.put("feedToken", session.getFeedToken());
-                    log.info("Login OK: {}", clientCode);
-                } else {
-                    result.put("success", false);
-                    result.put("message", j.path("message").asText("Login failed"));
+            // Try login with URL rotation
+            for (int i = 0; i < BASE_URLS.length; i++) {
+                try {
+                    String baseUrl = BASE_URLS[i];
+                    Request req = buildRequest(baseUrl + "/rest/auth/angelbroking/user/v1/loginByPassword",
+                            apiKey, null, body);
+                    
+                    try (Response res = http.newCall(req).execute()) {
+                        JsonNode j = mapper.readTree(res.body().string());
+                        if (j.path("status").asBoolean()) {
+                            JsonNode data = j.path("data");
+                            session = new SessionInfo();
+                            session.setJwtToken(data.path("jwtToken").asText());
+                            session.setFeedToken(data.path("feedToken").asText());
+                            session.setClientCode(clientCode);
+                            session.setName(data.path("name").asText(clientCode));
+                            session.setLoggedIn(true);
+                            currentBaseIndex = i; // Remember working URL
+                            result.put("success",   true);
+                            result.put("name",      session.getName());
+                            result.put("feedToken", session.getFeedToken());
+                            log.info("Login OK: {} using URL {}", clientCode, baseUrl);
+                            return result;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("Login attempt {} failed for {}: {}", i + 1, BASE_URLS[i], e.getMessage());
+                    if (i == BASE_URLS.length - 1) {
+                        // Last attempt failed
+                        result.put("success", false);
+                        result.put("message", "All login URLs failed: " + e.getMessage());
+                    }
                 }
             }
         } catch (Exception e) {
@@ -67,7 +84,7 @@ public class AngelOneService {
         log.info("Fetching expiries for {} - Session logged in: {}", instrument, session.isLoggedIn());
         if (!session.isLoggedIn()) {
             log.warn("Session not logged in - using generated expiries");
-            return genExpiries();
+            return genExpiries(instrument);
         }
         try {
             String body = mapper.writeValueAsString(Map.of(
@@ -88,7 +105,7 @@ public class AngelOneService {
                 }
             }
         } catch (Exception e) { log.error("Expiry fetch: {}", e.getMessage()); }
-        return genExpiries();
+        return genExpiries(instrument);
     }
 
     // ── FETCH FULL OPTION CHAIN (REST snapshot) ───────────────────────────────
@@ -99,31 +116,47 @@ public class AngelOneService {
             log.warn("Session not logged in - returning null");
             return null;
         }
-        try {
-            String body = mapper.writeValueAsString(Map.of(
-                "name", instrument, "expirydate", expiry, "strikePrice", "", "optionType", ""
-            ));
-            Request req = buildRequest(
-                BASE + "/rest/secure/angelbroking/marketData/v1/optionChain",
-                apiKey, session.getJwtToken(), body);
-            try (Response res = http.newCall(req).execute()) {
-                String responseBody = res.body().string();
+        
+        // Try with URL rotation and fallback
+        for (int attempt = 0; attempt < BASE_URLS.length; attempt++) {
+            int urlIndex = (currentBaseIndex + attempt) % BASE_URLS.length;
+            String baseUrl = BASE_URLS[urlIndex];
+            
+            try {
+                String body = mapper.writeValueAsString(Map.of(
+                    "name", instrument, "expirydate", expiry, "strikePrice", "", "optionType", ""
+                ));
+                Request req = buildRequest(
+                    baseUrl + "/rest/secure/angelbroking/marketData/v1/optionChain",
+                    apiKey, session.getJwtToken(), body);
                 
-                // Check if response is HTML (blocking/error response)
-                if (responseBody.trim().startsWith("<html>")) {
-                    log.error("Angel One API blocking detected - Response: {}", responseBody.substring(0, Math.min(200, responseBody.length())));
-                    return null;
+                try (Response res = http.newCall(req).execute()) {
+                    String responseBody = res.body().string();
+                    
+                    // Check if response is HTML (blocking/error response)
+                    if (responseBody.trim().startsWith("<html>")) {
+                        log.warn("Angel One API blocking detected on {} - Response: {}", 
+                            baseUrl, responseBody.substring(0, Math.min(200, responseBody.length())));
+                        continue; // Try next URL
+                    }
+                    
+                    JsonNode j = mapper.readTree(responseBody);
+                    if (j.path("status").asBoolean() && j.has("data")) {
+                        log.info("REST OC fetch OK from {}: {} rows", baseUrl, j.path("data").size());
+                        // Update current working URL index
+                        currentBaseIndex = urlIndex;
+                        return parseOC(j.path("data"), instrument, expiry, "REST");
+                    } else {
+                        log.warn("Angel One API returned status=false on {}: {}", baseUrl, j.toString());
+                    }
                 }
-                
-                JsonNode j = mapper.readTree(responseBody);
-                if (j.path("status").asBoolean() && j.has("data")) {
-                    log.info("REST OC fetch OK: {} rows", j.path("data").size());
-                    return parseOC(j.path("data"), instrument, expiry, "REST");
-                } else {
-                    log.warn("Angel One API returned status=false: {}", j.toString());
+            } catch (Exception e) { 
+                log.warn("OC fetch attempt {} failed on {}: {}", attempt + 1, baseUrl, e.getMessage());
+                if (attempt == BASE_URLS.length - 1) {
+                    log.error("All OC fetch attempts failed");
                 }
             }
-        } catch (Exception e) { log.error("OC fetch error: {}", e.getMessage()); }
+        }
         return null;
     }
 
@@ -264,47 +297,57 @@ public class AngelOneService {
         return b.build();
     }
 
-    private List<String> genExpiries() {
+    private List<String> genExpiries(String instrument) {
         List<String> out = new ArrayList<>();
         String[] mo = {"Jan","Feb","Mar","Apr","May","Jun",
                         "Jul","Aug","Sep","Oct","Nov","Dec"};
         Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"));
         
-        // Generate realistic expiry dates based on current market practice
-        // NIFTY: Weekly (every Thursday) + Monthly (last Thursday)
-        // BANKNIFTY: Weekly (every Wednesday, Thursday, Friday) + Monthly (last Thursday)
-        
-        for (int i = 0; i < 6; i++) {
-            Calendar t = (Calendar) cal.clone();
-            t.add(Calendar.DAY_OF_YEAR, i * 7); // Weekly intervals
-            
-            // Find nearest expiry day (Thu for NIFTY, Wed/Thu/Fri for BANKNIFTY)
-            int[] expiryDays = {Calendar.THURSDAY, Calendar.WEDNESDAY, Calendar.FRIDAY};
-            int closestDay = Calendar.THURSDAY; // Default to Thursday
-            
-            for (int day : expiryDays) {
-                int diff = (day - t.get(Calendar.DAY_OF_WEEK) + 7) % 7;
-                if (diff <= 3) { // Within 3 days
-                    closestDay = day;
-                    break;
+        // Generate instrument-specific expiry dates
+        if ("BANKNIFTY".equals(instrument)) {
+            // BANKNIFTY: Weekly (Wednesday, Thursday, Friday) + Monthly (last Thursday)
+            for (int i = 0; i < 8; i++) { // More dates for BANKNIFTY
+                Calendar t = (Calendar) cal.clone();
+                t.add(Calendar.DAY_OF_YEAR, i * 1); // Check daily for next 8 days
+                
+                // Check if it's a BANKNIFTY expiry day (Wed, Thu, Fri)
+                int dayOfWeek = t.get(Calendar.DAY_OF_WEEK);
+                if (dayOfWeek == Calendar.WEDNESDAY || 
+                    dayOfWeek == Calendar.THURSDAY || 
+                    dayOfWeek == Calendar.FRIDAY) {
+                    
+                    // Skip if date is in the past
+                    if (t.before(cal)) continue;
+                    
+                    out.add(String.format("%02d%s%d",
+                        t.get(Calendar.DAY_OF_MONTH),
+                        mo[t.get(Calendar.MONTH)],
+                        t.get(Calendar.YEAR)));
                 }
             }
-            
-            int diff = (closestDay - t.get(Calendar.DAY_OF_WEEK) + 7) % 7;
-            t.add(Calendar.DAY_OF_YEAR, diff);
-            
-            // Skip if date is in the past
-            if (t.before(cal)) {
-                t.add(Calendar.DAY_OF_YEAR, 7);
+        } else {
+            // NIFTY: Weekly (Thursday) + Monthly (last Thursday)
+            for (int i = 0; i < 6; i++) {
+                Calendar t = (Calendar) cal.clone();
+                t.add(Calendar.DAY_OF_YEAR, i * 7); // Weekly intervals
+                
+                // Find next Thursday
+                int diff = (Calendar.THURSDAY - t.get(Calendar.DAY_OF_WEEK) + 7) % 7;
+                t.add(Calendar.DAY_OF_YEAR, diff);
+                
+                // Skip if date is in the past
+                if (t.before(cal)) {
+                    t.add(Calendar.DAY_OF_YEAR, 7);
+                }
+                
+                out.add(String.format("%02d%s%d",
+                    t.get(Calendar.DAY_OF_MONTH),
+                    mo[t.get(Calendar.MONTH)],
+                    t.get(Calendar.YEAR)));
             }
-            
-            out.add(String.format("%02d%s%d",
-                t.get(Calendar.DAY_OF_MONTH),
-                mo[t.get(Calendar.MONTH)],
-                t.get(Calendar.YEAR)));
         }
         
-        // Sort and remove duplicates
+        // Sort and remove duplicates, limit to 6
         return out.stream().distinct().sorted().limit(6).collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
     }
 
