@@ -90,18 +90,36 @@ public class AngelOneService {
             String body = mapper.writeValueAsString(Map.of(
                 "name", instrument, "expirydate", "", "strikePrice", "", "optionType", "CE"
             ));
-            Request req = buildRequest(
-                BASE + "/rest/secure/angelbroking/marketData/v1/optionChain",
-                apiKey, session.getJwtToken(), body);
-            try (Response res = http.newCall(req).execute()) {
-                JsonNode j = mapper.readTree(res.body().string());
-                if (j.path("status").asBoolean() && j.has("data")) {
-                    Set<String> exps = new LinkedHashSet<>();
-                    for (JsonNode n : j.path("data")) {
-                        String exp = n.path("expiry").asText();
-                        if (!exp.isEmpty()) exps.add(exp);
+            
+            // Try with URL rotation for expiries
+            for (int attempt = 0; attempt < BASE_URLS.length; attempt++) {
+                int urlIndex = (currentBaseIndex + attempt) % BASE_URLS.length;
+                String baseUrl = BASE_URLS[urlIndex];
+                
+                try {
+                    Request req = buildRequest(
+                        baseUrl + "/rest/secure/angelbroking/marketData/v1/optionChain",
+                        apiKey, session.getJwtToken(), body);
+                    
+                    try (Response res = http.newCall(req).execute()) {
+                        JsonNode j = mapper.readTree(res.body().string());
+                        if (j.path("status").asBoolean() && j.has("data")) {
+                            Set<String> exps = new LinkedHashSet<>();
+                            for (JsonNode n : j.path("data")) {
+                                String exp = n.path("expiry").asText();
+                                if (!exp.isEmpty()) exps.add(exp);
+                            }
+                            if (!exps.isEmpty()) {
+                                log.info("Fetched {} expiries from {}", exps.size(), baseUrl);
+                                return new ArrayList<>(exps);
+                            }
+                        }
                     }
-                    if (!exps.isEmpty()) return new ArrayList<>(exps);
+                } catch (Exception e) {
+                    log.warn("Expiry fetch attempt {} failed on {}: {}", attempt + 1, baseUrl, e.getMessage());
+                    if (attempt == BASE_URLS.length - 1) {
+                        log.error("All expiry fetch attempts failed");
+                    }
                 }
             }
         } catch (Exception e) { log.error("Expiry fetch: {}", e.getMessage()); }
