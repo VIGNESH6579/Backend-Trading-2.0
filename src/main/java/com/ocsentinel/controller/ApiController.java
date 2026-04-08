@@ -26,6 +26,8 @@ public class ApiController {
         Map<String, Object> health = new HashMap<>();
         
         try {
+            log.info("Health endpoint called");
+            
             // Basic application info
             health.put("status", "UP");
             health.put("service", "OC Sentinel — REST Polling Edition");
@@ -41,16 +43,19 @@ public class ApiController {
             ));
             
             // Service status
+            var session = angelService.getSession();
             health.put("services", Map.of(
-                "angelOneService", angelService.getSession().isLoggedIn(),
+                "angelOneService", session != null ? session.isLoggedIn() : false,
                 "restPolling", restPollingService.isRunning(),
                 "currentInstrument", restPollingService.getCurrentInstrument(),
                 "currentExpiry", restPollingService.getCurrentExpiry()
             ));
             
+            log.info("Health check successful");
             return ResponseEntity.ok(health);
             
         } catch (Exception e) {
+            log.error("Health endpoint error: ", e);
             health.put("status", "ERROR");
             health.put("error", e.getMessage());
             health.put("timestamp", System.currentTimeMillis());
@@ -132,14 +137,40 @@ public class ApiController {
     // ── SESSION STATUS ────────────────────────────────────────────────────────
     @GetMapping("/session")
     public ResponseEntity<Map<String, Object>> session() {
-        var s = angelService.getSession();
-        return ResponseEntity.ok(Map.of(
-            "loggedIn",       s.isLoggedIn(),
-            "name",           s.getName() != null ? s.getName() : "",
-            "pollingRunning", restPollingService.isRunning(),
-            "instrument",     restPollingService.getCurrentInstrument(),
-            "expiry",         restPollingService.getCurrentExpiry()
-        ));
+        try {
+            log.info("Session endpoint called - checking session status");
+            
+            var s = angelService.getSession();
+            if (s == null) {
+                log.warn("Session object is null");
+                return ResponseEntity.ok(Map.of(
+                    "loggedIn", false,
+                    "name", "",
+                    "pollingRunning", false,
+                    "instrument", "",
+                    "expiry", ""
+                ));
+            }
+            
+            Map<String, Object> response = Map.of(
+                "loggedIn", s.isLoggedIn(),
+                "name", s.getName() != null ? s.getName() : "",
+                "pollingRunning", restPollingService.isRunning(),
+                "instrument", restPollingService.getCurrentInstrument() != null ? restPollingService.getCurrentInstrument() : "",
+                "expiry", restPollingService.getCurrentExpiry() != null ? restPollingService.getCurrentExpiry() : ""
+            );
+            
+            log.info("Session response: {}", response);
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            log.error("Session endpoint error: ", e);
+            return ResponseEntity.status(500).body(Map.of(
+                "error", "Internal server error",
+                "message", e.getMessage(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
     }
 
     // ── AI ANALYSIS ───────────────────────────────────────────────────────────
