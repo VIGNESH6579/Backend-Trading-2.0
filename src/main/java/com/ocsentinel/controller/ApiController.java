@@ -23,12 +23,39 @@ public class ApiController {
     // ── HEALTH ────────────────────────────────────────────────────────────────
     @GetMapping("/health")
     public ResponseEntity<Map<String, Object>> health() {
-        return ResponseEntity.ok(Map.of(
-            "status",    "UP",
-            "service",   "OC Sentinel — REST Polling Edition",
-            "version",   "2.1.0",
-            "timestamp", System.currentTimeMillis()
-        ));
+        Map<String, Object> health = new HashMap<>();
+        
+        try {
+            // Basic application info
+            health.put("status", "UP");
+            health.put("service", "OC Sentinel — REST Polling Edition");
+            health.put("version", "2.1.0");
+            health.put("timestamp", System.currentTimeMillis());
+            
+            // System information
+            Runtime runtime = Runtime.getRuntime();
+            health.put("memory", Map.of(
+                "totalMB", runtime.totalMemory() / 1024 / 1024,
+                "freeMB", runtime.freeMemory() / 1024 / 1024,
+                "usedMB", (runtime.totalMemory() - runtime.freeMemory()) / 1024 / 1024
+            ));
+            
+            // Service status
+            health.put("services", Map.of(
+                "angelOneService", angelService.getSession().isLoggedIn(),
+                "restPolling", restPollingService.isRunning(),
+                "currentInstrument", restPollingService.getCurrentInstrument(),
+                "currentExpiry", restPollingService.getCurrentExpiry()
+            ));
+            
+            return ResponseEntity.ok(health);
+            
+        } catch (Exception e) {
+            health.put("status", "ERROR");
+            health.put("error", e.getMessage());
+            health.put("timestamp", System.currentTimeMillis());
+            return ResponseEntity.status(500).body(health);
+        }
     }
 
     // ── LOGIN ─────────────────────────────────────────────────────────────────
